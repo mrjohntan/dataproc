@@ -1,0 +1,40 @@
+gcloud config set project playground-s-11-3b7969ac
+export PROJECT=$(gcloud info --format='value(config.project)') 
+echo $PROJECT
+export REGION=us-central1
+echo $REGION
+export BUCKET=dp2-testdata-$((RANDOM % 9999))
+echo $BUCKET
+gcloud services enable dataproc.googleapis.com servicenetworking.googleapis.com cloudkms.googleapis.com metastore.googleapis.com cloudresourcemanager.googleapis.com
+cd /Users/john/Projects/dataproc/
+gsutil mb -l ${REGION} gs://${BUCKET}
+gsutil cp /Users/john/Projects/dataproc/test_review.json gs://${BUCKET}
+gcloud dataproc autoscaling-policies import dp2-autoscale --source=autoscaling_dp20.yaml --region=${REGION}
+gcloud beta metastore services create dp2-cluster-metastore --location=${REGION} --database-type="spanner"
+
+# gsutil cp /Users/john/Projects/dataproc/test.json gs://${BUCKET}
+# gsutil cp /Users/john/Projects/dataproc/yelp_academic_dataset_review.json gs://${BUCKET}
+# gsutil cp /Users/john/Projects/dataproc/yelp_academic_dataset_business.json gs://${BUCKET}
+
+# n2 machine type
+gcloud dataproc clusters create dp2-cluster --scopes=cloud-platform --autoscaling-policy dp2-autoscale --enable-component-gateway --region ${REGION} --zone="" --master-machine-type n2-standard-2 --master-boot-disk-type pd-ssd --master-boot-disk-size 50 --num-workers 2 --worker-machine-type n2-standard-2 --worker-boot-disk-type pd-ssd --worker-boot-disk-size 50 --secondary-worker-type=non-preemptible --secondary-worker-boot-disk-type pd-ssd --secondary-worker-boot-disk-size 50 --image-version 2.1-debian11 --dataproc-metastore projects/${PROJECT}/locations/${REGION}/services/dp2-cluster-metastore --bucket=${BUCKET} --optional-components=JUPYTER
+
+gcloud dataproc jobs submit spark --cluster=dp2-cluster --region=${REGION} --async --class=org.apache.spark.examples.SparkPi --jars=file:///usr/lib/spark/examples/jars/spark-examples.jar -- 1000000
+
+gsutil cp gs://hive-solution/part-00000.parquet gs://gcs-bucket-dp2-cluster-metastore-451568cc-3593-40f7-a546-0daf4b/datasets/transactions/part-00000.parquet
+
+gcloud dataproc jobs submit hive --cluster dp2-cluster --region ${REGION} --execute "CREATE EXTERNAL TABLE transactions (SubmissionDate DATE, TransactionAmount DOUBLE, TransactionType STRING) STORED AS PARQUET LOCATION 'gs://gcs-bucket-dp2-cluster-metastore-451568cc-3593-40f7-a546-0daf4b/datasets/transactions';"
+
+gcloud dataproc jobs submit hive --cluster dp2-cluster --region ${REGION} --execute "SELECT * FROM transactions LIMIT 10;"
+
+gcloud dataproc jobs submit pyspark --cluster=dp2-cluster analysis.py --async
+
+gcloud dataproc jobs submit pyspark --cluster=dp2-cluster wordcount1.py --async
+
+gcloud dataproc jobs submit pyspark --cluster=dp2-cluster pi.py -- 50000 --async
+
+gcloud dataproc clusters delete dp2-cluster --region ${REGION}
+
+gcloud metastore services delete dp2-cluster-metastore --location=${REGION}
+
+gsutil rm -r gs://${BUCKET}
